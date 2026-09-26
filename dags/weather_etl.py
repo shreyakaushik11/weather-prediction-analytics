@@ -3,6 +3,14 @@ from airflow.decorators import task
 from datetime import datetime
 import requests
 
+from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
+
+
+def return_snowflake_conn():
+    hook = SnowflakeHook(snowflake_conn_id="snowflake_conn")
+    conn = hook.get_conn()
+    return conn.cursor()
+
 
 @task
 def extract_weather(city, latitude, longitude):
@@ -49,6 +57,69 @@ def extract_weather(city, latitude, longitude):
     return records
 
 
+@task
+def load_weather(san_jose_records, san_francisco_records):
+    cur = return_snowflake_conn()
+
+    target_table = "raw.weather_data"
+
+    cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS {target_table} (
+            city VARCHAR,
+            latitude FLOAT,
+            longitude FLOAT,
+            date DATE,
+            temp_max FLOAT,
+            temp_min FLOAT,
+            precipitation FLOAT,
+            weather_code INTEGER,
+            PRIMARY KEY (city, date)
+        );
+    """)
+
+    records = san_jose_records + san_francisco_records
+
+    try:
+        cur.execute("BEGIN;")
+
+        cur.execute(f"DELETE FROM {target_table};")
+
+        for r in records:
+            sql = f"""
+                INSERT INTO {target_table} (
+                    city,
+                    latitude,
+                    longitude,
+                    date,
+                    temp_max,
+                    temp_min,
+                    precipitation,
+                    weather_code
+                )
+                VALUES (
+                    '{r[0]}',
+                    {r[1]},
+                    {r[2]},
+                    '{r[3]}',
+                    {r[4]},
+                    {r[5]},
+                    {r[6]},
+                    {r[7]}
+                );
+            """
+
+            cur.execute(sql)
+
+        cur.execute("COMMIT;")
+
+        print(f"Successfully loaded {len(records)} records into {target_table}")
+
+    except Exception as e:
+        cur.execute("ROLLBACK;")
+        print(f"Error loading weather data: {e}")
+        raise
+
+
 with DAG(
     dag_id="weather_etl",
     start_date=datetime(2026, 9, 1),
@@ -66,4 +137,9 @@ with DAG(
         "San Francisco",
         37.7749,
         -122.4194
+    )
+
+    load_weather(
+        san_jose_weather,
+        san_francisco_weather
     )
