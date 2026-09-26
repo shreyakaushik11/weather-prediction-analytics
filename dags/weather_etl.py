@@ -21,6 +21,8 @@ def extract_weather(city, latitude, longitude):
     }
 
     response = requests.get(url, params=params)
+    response.raise_for_status()
+
     data = response.json()
 
     records = []
@@ -36,6 +38,13 @@ def extract_weather(city, latitude, longitude):
             data["daily"]["precipitation_sum"][i],
             data["daily"]["weather_code"][i]
         ])
+
+    print(f"City: {city}")
+    print(f"Number of records: {len(records)}")
+    print("First 5 records:")
+
+    for record in records[:5]:
+        print(record)
 
     return records
 
