@@ -1,5 +1,6 @@
 from airflow import DAG
 from airflow.decorators import task
+from airflow.models import Variable
 from datetime import datetime
 import requests
 
@@ -14,7 +15,7 @@ def return_snowflake_conn():
 
 @task
 def extract_weather(city, latitude, longitude):
-    url = "https://archive-api.open-meteo.com/v1/archive"
+    url = Variable.get("weather_api_url")
 
     params = {
         "latitude": latitude,
@@ -127,16 +128,26 @@ with DAG(
     schedule=None
 ) as dag:
 
+    san_jose_latitude = float(Variable.get("san_jose_latitude"))
+    san_jose_longitude = float(Variable.get("san_jose_longitude"))
+
+    san_francisco_latitude = float(
+        Variable.get("san_francisco_latitude")
+    )
+    san_francisco_longitude = float(
+        Variable.get("san_francisco_longitude")
+    )
+
     san_jose_weather = extract_weather(
         "San Jose",
-        37.3382,
-        -121.8863
+        san_jose_latitude,
+        san_jose_longitude
     )
 
     san_francisco_weather = extract_weather(
         "San Francisco",
-        37.7749,
-        -122.4194
+        san_francisco_latitude,
+        san_francisco_longitude
     )
 
     load_weather(
