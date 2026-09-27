@@ -1,6 +1,7 @@
 from airflow import DAG
 from airflow.decorators import task
 from airflow.models import Variable
+from airflow.operators.bash import BashOperator
 from datetime import datetime
 import requests
 
@@ -114,7 +115,10 @@ def load_weather(san_jose_records, san_francisco_records):
 
         cur.execute("COMMIT;")
 
-        print(f"Successfully loaded {len(records)} records into {target_table}")
+        print(
+            f"Successfully loaded {len(records)} records "
+            f"into {target_table}"
+        )
 
     except Exception as e:
         cur.execute("ROLLBACK;")
@@ -129,12 +133,18 @@ with DAG(
     schedule=None
 ) as dag:
 
-    san_jose_latitude = float(Variable.get("san_jose_latitude"))
-    san_jose_longitude = float(Variable.get("san_jose_longitude"))
+    san_jose_latitude = float(
+        Variable.get("san_jose_latitude")
+    )
+
+    san_jose_longitude = float(
+        Variable.get("san_jose_longitude")
+    )
 
     san_francisco_latitude = float(
         Variable.get("san_francisco_latitude")
     )
+
     san_francisco_longitude = float(
         Variable.get("san_francisco_longitude")
     )
@@ -151,7 +161,33 @@ with DAG(
         san_francisco_longitude
     )
 
-    load_weather(
+    load_task = load_weather(
         san_jose_weather,
         san_francisco_weather
     )
+
+    dbt_run = BashOperator(
+        task_id="dbt_run",
+        bash_command=(
+            "cd /opt/airflow/dbt/weather_analytics "
+            "&& dbt run"
+        )
+    )
+
+    dbt_test = BashOperator(
+        task_id="dbt_test",
+        bash_command=(
+            "cd /opt/airflow/dbt/weather_analytics "
+            "&& dbt test"
+        )
+    )
+
+    dbt_snapshot = BashOperator(
+        task_id="dbt_snapshot",
+        bash_command=(
+            "cd /opt/airflow/dbt/weather_analytics "
+            "&& dbt snapshot"
+        )
+    )
+
+    load_task >> dbt_run >> dbt_test >> dbt_snapshot
