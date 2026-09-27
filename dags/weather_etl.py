@@ -21,6 +21,7 @@ def extract_weather(city, latitude, longitude):
         "latitude": latitude,
         "longitude": longitude,
         "past_days": 60,
+        "forecast_days": 1,
         "daily": [
             "temperature_2m_max",
             "temperature_2m_min",
