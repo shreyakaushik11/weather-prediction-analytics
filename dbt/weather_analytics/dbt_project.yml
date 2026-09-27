@@ -32,5 +32,8 @@ clean-targets:         # directories to be removed by `dbt clean`
 models:
   weather_analytics:
     # Config indicated by + and applies to all files under models/example/
-    example:
+    transform:
       +materialized: view
+
+      analytics:
+        +materialized: view
