@@ -2,9 +2,9 @@
 
 ## Project Overview
 
-This project implements an end-to-end weather analytics pipeline using Apache Airflow, Snowflake, dbt, and Preset / Apache Superset.
+This project implements an end-to-end weather analytics pipeline using Apache Airflow, Snowflake, dbt, and Preset.
 
-The pipeline collects weather data for San Jose and San Francisco from the Open-Meteo API, loads the raw data into Snowflake, transforms the data using dbt, calculates analytical weather metrics, validates the transformed data, maintains historical snapshots, and prepares the final dataset for dashboard visualization.
+The pipeline collects weather data for San Jose and San Francisco from the Open-Meteo API, loads the raw data into Snowflake, transforms the data using dbt, calculates analytical weather metrics, validates the transformed data, maintains historical snapshots, and visualizes the final analytics dataset using Preset.
 
 ---
 
@@ -19,7 +19,7 @@ The goal of this project is to build an automated data pipeline that:
 - transforms raw weather data into meaningful analytical metrics
 - validates the transformed data
 - maintains historical snapshots
-- visualizes the results using a BI dashboard
+- visualizes weather trends using a BI dashboard
 
 ---
 
@@ -48,8 +48,8 @@ Snowflake
 DEV.ANALYTICS.WEATHER_METRICS
       |
       v
-Preset / Apache Superset
-Dashboard
+Preset
+Bay Area Weather Analytics Dashboard
 ```
 
 ---
@@ -59,15 +59,15 @@ Dashboard
 | Technology | Purpose |
 |---|---|
 | Python | API extraction and ETL logic |
-| Apache Airflow | Workflow orchestration and scheduling |
+| Apache Airflow | Workflow orchestration and task execution |
 | Docker | Running Airflow and supporting services |
 | Snowflake | Cloud data warehouse |
 | dbt | Data transformation, testing, and snapshots |
 | Open-Meteo API | Weather data source |
-| Preset / Apache Superset | BI dashboard and visualization |
-| SQL | Data loading, transformation, and validation |
+| Preset | BI dashboard and data visualization |
+| SQL | Data loading, transformation, validation, and analytics |
 | Git | Version control |
-| GitHub | Code repository and team collaboration |
+| GitHub | Team collaboration and source-code management |
 
 ---
 
@@ -82,10 +82,10 @@ Dashboard
 - 7-day rolling rainfall
 - temperature anomaly calculation
 - dbt data quality tests
-- duplicate city/date validation
+- custom duplicate city/date validation
 - dbt snapshots for historical tracking
 - Airflow and dbt integration
-- BI visualization using Preset / Apache Superset
+- Preset dashboard with city and date filtering
 
 ---
 
@@ -139,7 +139,7 @@ The pipeline performs the following steps:
 - `dbt_test` runs the dbt data quality tests.
 - `dbt_snapshot` creates or updates the dbt snapshot for historical tracking.
 
-The dbt tasks only run after the Snowflake load task completes successfully.
+The dbt tasks run only after the Snowflake loading step completes successfully.
 
 ---
 
@@ -224,7 +224,9 @@ ROLLBACK
 
 is executed and the exception is raised.
 
-This allows the pipeline to be rerun without creating duplicate data.
+The table is cleared before the current API result is inserted. Because the delete and insert operations are wrapped in the same transaction, a failed load is rolled back instead of leaving a partially updated table.
+
+This allows the pipeline to be rerun without accumulating duplicate weather records.
 
 ---
 
@@ -278,7 +280,7 @@ using:
 (TEMP_MAX + TEMP_MIN) / 2
 ```
 
-This staging model provides a cleaned and simplified version of the raw weather data.
+The staging model provides the weather fields needed by the analytics model and adds the daily average temperature.
 
 ---
 
@@ -312,19 +314,21 @@ The final analytics dataset is:
 
 `MOVING_AVG_7D`
 
-Calculates the average temperature for the current day and previous six days for each city.
+Calculates the rolling average of `AVG_TEMP` for the current day and the previous six records for each city.
 
 ### 7-Day Rolling Rainfall
 
 `ROLLING_RAINFALL_7D`
 
-Calculates total precipitation for the current day and previous six days for each city.
+Calculates the rolling sum of precipitation for the current day and the previous six records for each city.
 
 ### Temperature Anomaly
 
 `TEMPERATURE_ANOMALY`
 
-Compares each day's average temperature with the overall average temperature for that city.
+Calculates the difference between a day's `AVG_TEMP` and the overall average temperature for that city.
+
+A positive value represents a day warmer than that city's average, while a negative value represents a cooler-than-average day.
 
 ---
 
@@ -338,7 +342,10 @@ Important fields include:
 
 - `CITY`
 - `DATE`
+- `TEMP_MAX`
+- `TEMP_MIN`
 - `AVG_TEMP`
+- `PRECIPITATION`
 - `MOVING_AVG_7D`
 - `ROLLING_RAINFALL_7D`
 - `TEMPERATURE_ANOMALY`
@@ -353,40 +360,60 @@ Data quality tests are defined in:
 
 `models/schema.yml`
 
-The project includes:
+The project uses built-in dbt tests including:
 
 - `not_null`
 - `accepted_values`
 
-Tests are applied to important fields including:
-
-- `CITY`
-- `DATE`
-- `AVG_TEMP`
-- `MOVING_AVG_7D`
-- `ROLLING_RAINFALL_7D`
-- `TEMPERATURE_ANOMALY`
+The tests verify that important fields such as city, date, average temperature, and calculated metrics contain valid values.
 
 The `CITY` field is restricted to:
 
 - San Jose
 - San Francisco
 
+These tests help identify missing values or unexpected city values before the analytics data is used in the dashboard.
+
 ---
 
-## Custom Duplicate Test
+## Custom Duplicate City-Date Test
 
-A custom dbt test is located at:
+A custom dbt data test is located at:
 
 `tests/no_duplicate_city_date.sql`
 
-This test verifies that duplicate combinations of:
+The purpose of this test is to verify that each city has only one analytics record for each date.
 
-`CITY + DATE`
+The test groups the `weather_metrics` model by:
 
-do not exist.
+```text
+CITY + DATE
+```
 
-A successful test returns zero rows.
+and counts the number of rows in each city-date combination.
+
+Conceptually, the test performs the following check:
+
+```sql
+select
+    city,
+    date,
+    count(*) as record_count
+from {{ ref('weather_metrics') }}
+group by
+    city,
+    date
+having count(*) > 1
+```
+
+dbt custom data tests are expected to return only records that violate the rule being tested.
+
+Therefore:
+
+- **0 rows returned** → the test passes because no duplicate city-date combinations exist.
+- **1 or more rows returned** → the test fails because at least one city has multiple records for the same date.
+
+This test is important because the analytics model is designed to represent one daily weather record per city. Duplicate dates could distort the moving average, rainfall, anomaly calculations, and dashboard visualizations.
 
 ---
 
@@ -413,12 +440,14 @@ The snapshot output is stored in:
 
 `DEV.ANALYTICS.WEATHER_SNAPSHOT`
 
-dbt automatically adds metadata fields including:
+dbt automatically adds snapshot metadata fields including:
 
 - `DBT_SCD_ID`
 - `DBT_UPDATED_AT`
 - `DBT_VALID_FROM`
 - `DBT_VALID_TO`
+
+The snapshot preserves historical versions of weather records when one of the monitored fields changes.
 
 ---
 
@@ -461,29 +490,63 @@ dbt_snapshot
 
 This ensures that dbt transformations run only after the ETL load completes successfully.
 
+The models are built first, the data quality tests are then executed, and finally the snapshot is updated.
+
 ---
 
-## Dashboard
+## Preset Dashboard
 
-Preset / Apache Superset is used as the BI visualization tool.
+Preset is used as the BI visualization tool.
+
+The dashboard is named:
+
+**Bay Area Weather Analytics**
 
 The dashboard uses:
 
 `DEV.ANALYTICS.WEATHER_METRICS`
 
-as the source dataset.
+as its source dataset.
 
-Planned visualizations include:
+The dashboard contains the following visualizations:
 
-- 7-Day Moving Average Temperature
-- 7-Day Rolling Rainfall
-- Temperature Anomaly
-- San Jose vs. San Francisco weather comparison
+### Temperature Anomaly by City
 
-Dashboard filters can include:
+Displays daily temperature anomalies to show when temperatures are above or below the overall average for each city.
 
-- City
-- Date
+### Daily Temperature vs 7-Day Moving Average
+
+Compares daily average temperature with the 7-day moving average to make short-term temperature trends easier to identify.
+
+### Daily Temperature Range by City
+
+Displays the daily high, average, and low temperatures for San Jose and San Francisco.
+
+This helps compare both the overall temperature level and the daily temperature spread between the two cities.
+
+### Daily vs Rolling 7-Day Rainfall
+
+Compares daily precipitation with the rolling 7-day rainfall total.
+
+This makes individual rainfall events and short-term accumulated rainfall easier to compare.
+
+---
+
+## Dashboard Filters
+
+The Preset dashboard supports filtering by:
+
+- `CITY`
+- date range
+
+The city filter allows users to compare both cities together or focus on a single city.
+
+For example, the dashboard can display:
+
+- San Jose and San Francisco over the full date range
+- San Jose only over the full date range
+
+The filters apply across the dashboard charts so that the visualizations update consistently.
 
 ---
 
@@ -492,7 +555,7 @@ Dashboard filters can include:
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/shreyakaushik11/weather-prediction-analytics.git
+git clone <repository-url>
 cd weather-prediction-analytics
 ```
 
@@ -538,7 +601,7 @@ Inside the Docker container, the private key is available at:
 
 `/opt/airflow/keys/rsa_key.p8`
 
-Each team member should use their own Snowflake account credentials and key pair.
+Each team member should use their own Snowflake credentials and key pair.
 
 ---
 
@@ -679,6 +742,7 @@ Do not commit:
 - RSA private keys
 - RSA private-key passphrases
 - dbt credentials
+- Preset connection secrets
 - other sensitive connection information
 
 ---
@@ -700,11 +764,5 @@ Possible improvements include:
 - adding more dbt data-quality tests
 - analyzing longer historical periods
 - expanding snapshot analysis
-- adding interactive dashboard filters
+- adding additional interactive Preset dashboard controls
 - comparing weather trends across more locations
-
----
-
-## GitHub Repository
-
-https://github.com/shreyakaushik11/weather-prediction-analytics
